@@ -2,7 +2,6 @@
 
 This is a predictive analytics project, aiming to identify which free users are most likely to convert to premium subscribers during a marketing campaign, using user behavior and engagement data.
 
----
 
 ## 🔍 Objective
 
@@ -11,7 +10,6 @@ Help a streaming platform target users most likely to become premium subscribers
 - Social interaction (e.g., shouts, friends who are subscribers)
 - Changes in user behavior during the previous campaign
 
----
 
 ## 💻 Techniques Used
 
@@ -25,7 +23,6 @@ Help a streaming platform target users most likely to become premium subscribers
   - Cumulative response curve
   - Feature importance visualization
 
----
 
 ## 💡 Key Results
 
@@ -38,7 +35,6 @@ Help a streaming platform target users most likely to become premium subscribers
 ✅ Targeting top 25% of users captures 65% of likely converters  
 ✅ Model significantly outperforms random targeting
 
----
 
 ## 🌟 Feature Insights
 
@@ -46,7 +42,7 @@ Top predictors of premium conversion:
 - `lovedTracks`, `delta_songsListened`, `subscriber_friend_cnt`
 - Users with more social engagement (e.g., `shouts`)
 
----
+
 ## 🍀 Key Takeaways
 The streaming platform can target more potential premium subscribers and optimize marketing costs using this predictive model in the next marketing campaigns.
 
