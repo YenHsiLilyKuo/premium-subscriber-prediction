@@ -2,10 +2,6 @@
 
 This is a predictive analytics project, aiming to identify which free users are most likely to convert to premium subscribers during a marketing campaign, using user behavior and engagement data.
 
-![Project Type](https://img.shields.io/badge/type-academic--project-blue)
-![Language](https://img.shields.io/badge/language-R-1f425f)
-![Model](https://img.shields.io/badge/model-Random%20Forest%2C%20Decision%20Tree-orange)
-
 ---
 
 ## 🔍 Objective
