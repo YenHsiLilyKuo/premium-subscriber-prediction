@@ -1,0 +1,417 @@
+---
+title: "hw2_group_final"
+output: pdf_document
+date: "2024-10-28"
+---
+1. Overview data
+```{r}
+getwd()
+setwd("/Users/lilykuo/Desktop/MSBA/Business Analytics in R/hw2")
+library(dplyr)
+xyzdata <- read.csv("XYZData.csv")
+summary(xyzdata)
+```
+
+2. remove unnecessary value to predict (unique value):
+
+```{r}
+xyzdata <- xyzdata %>% select(-user_id)
+```
+
+3. Overview overall correlation by visualization
+
+```{r}
+library(ggplot2)
+library(corrplot)
+# choose only numeric variables
+numericdata <- xyzdata[, c("adopter", "age", "friend_cnt", "avg_friend_age", "avg_friend_male", 
+                         "friend_country_cnt", "subscriber_friend_cnt", "songsListened", 
+                         "lovedTracks", "posts", "playlists", "shouts", "tenure", 
+                         "delta_friend_cnt", "delta_avg_friend_age", "delta_avg_friend_male", 
+                         "delta_friend_country_cnt", "delta_subscriber_friend_cnt", 
+                         "delta_songsListened", "delta_lovedTracks", "delta_posts", 
+                         "delta_playlists", "delta_shouts")]
+corr_matrix <- cor(numericdata)
+corrplot(corr_matrix, method = "color", type = "lower", tl.cex = 0.6)
+```
+
+We can not see the distinct correlation between adopter and other variables with this map. However, we can check highly correalted variables and we can use this in the step of filter selection or additional analysis.
+Highly correlated variables : (avg_friend_age - age), (friend_country_cnt - friend_cnt), (subscriber_friend_cnt - friend_cnt), (delta_song_listened - song_listened), (delta_lovedTracks - lovedTracks), (delta_friend_country_cnt - delta_friend_cnt), ...
+
+4. Data Splitting
+We split the data in three-way to protect overfit.
+
+```{r}
+library(rpart)
+library(caret)
+
+set.seed(123)  # For reproducibility
+# Create an initial split to separate training and the rest
+train_rows <- createDataPartition(y = xyzdata$adopter, p = 0.70, list = FALSE)
+xyzdata_train <- xyzdata[train_rows,]
+xyzdata_temp <- xyzdata[-train_rows,]  # Remaining data (30%)
+
+# Split the remaining data into validation and test sets
+val_rows <- createDataPartition(y = xyzdata_temp$adopter, p = 0.5, list = FALSE)  # 50% of the remaining data
+xyzdata_val <- xyzdata_temp[val_rows,]
+xyzdata_test <- xyzdata_temp[-val_rows,]
+
+table(xyzdata$adopter)
+```
+
+
+5. Handling Class Imbalance
+Smote and Rose do not work so we applied random over-sampling
+```{r}
+# Random over-sampling function
+over_sample <- function(data, target, target_class) {
+  # Get majority and minority class
+  majority <- data[data[[target]] == target_class, ]
+  minority <- data[data[[target]] != target_class, ]
+  
+  # Randomly sample with replacement from the minority class
+  minority_sample <- minority[sample(nrow(minority), size = nrow(majority), replace = TRUE), ]
+  
+  # Combine the majority class with the sampled minority class
+  balanced_data <- rbind(majority, minority_sample)
+  
+  return(balanced_data)
+}
+
+# Apply over-sampling
+balanced_data <- over_sample(xyzdata_train, "adopter", target_class = 1)
+
+# Check the class distribution
+table(balanced_data$adopter)
+prop.table(table(balanced_data$adopter))
+```
+
+Train Random Forest Model
+```{r}
+# Install and load required libraries
+
+library(randomForest)
+library(caret)
+library(doParallel)  # Parallel processing library
+
+balanced_data$adopter <- as.factor(balanced_data$adopter)
+
+# Step 4: Set up parallel processing
+cl <- makeCluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# Step 5: Define cross-validation method
+control <- trainControl(method = "cv", number = 5, verboseIter = TRUE)
+
+# Step 6: Train the Random Forest model using balanced data
+rf_cv_model <- train(adopter ~ ., 
+                     data = balanced_data, 
+                     method = "rf", 
+                     trControl = control, 
+                     tuneLength = 3,  
+                     ntree = 100,      
+                     importance = TRUE)
+
+# Stop parallel processing
+stopCluster(cl)
+
+# Check the results
+print(rf_cv_model)
+```
+
+Evaluate the Model on the Validation Data - Confusion Matrix
+```{r}
+# Ensure the target variable in the validation set is a factor
+xyzdata_val$adopter <- as.factor(xyzdata_val$adopter)
+
+# Make predictions using the trained Random Forest model
+rf_predictions <- predict(rf_cv_model, xyzdata_val)
+
+# Ensure predictions are factors with the same levels as the actual target variable
+rf_predictions <- factor(rf_predictions, levels = levels(xyzdata_val$adopter))
+
+# Confusion matrix to evaluate model performance
+conf_matrix <- confusionMatrix(rf_predictions, xyzdata_val$adopter, positive = '1')
+print(conf_matrix)
+```
+
+Feature Importance
+```{r}
+# Get feature importance
+importance_values <- varImp(rf_cv_model, scale = FALSE)
+
+# Plot the feature importance
+plot(importance_values, main = "Feature Importance from Random Forest")
+```
+Evaluate the Model on the Validation Data - ROC and AUC
+```{r}
+# Predict probabilities (for ROC curve)
+rf_probabilities <- predict(rf_cv_model, xyzdata_val, type = "prob")[,2]
+
+# Load library for ROC and AUC
+library(pROC)
+
+# Generate ROC curve
+roc_curve_rf <- roc(xyzdata_val$adopter, rf_probabilities)
+
+# Plot ROC curve
+plot(roc_curve_rf, col = "green", main = "Random Forest ROC Curve")
+
+# AUC value
+auc(roc_curve_rf)
+```
+Parameter tuning, using parallel processing to optimize speed
+```{r}
+str(xyzdata_train)
+xyzdata_train$adopter <- as.factor(xyzdata_train$adopter)
+
+library(caret)
+library(randomForest)
+library(doParallel)
+# Example using a small subset
+set.seed(123)
+# Ensure 'adopter' is a factor
+clean_data <- na.omit(xyzdata_train)  # Remove any rows with NA values
+clean_data$adopter <- as.factor(clean_data$adopter)
+
+# Define control
+control <- trainControl(method = "cv", number = 5, verboseIter = TRUE)
+
+# Define tuning grid
+tune_grid <- expand.grid(mtry = c(2, 13, 25))
+
+library(doParallel)
+
+# Set up parallel processing
+cl <- makeCluster(detectCores() - 1)  # Leave one core free
+registerDoParallel(cl)
+
+# Train your model as before
+rf_tuned <- train(adopter ~ ., 
+                  data = xyzdata_train, 
+                  method = "rf", 
+                  trControl = control, 
+                  tuneGrid = tune_grid, 
+                  ntree = 100)  # Set number of trees
+
+# Stop parallel processing
+stopCluster(cl)
+
+# Check best model
+print(rf_tuned$bestTune)
+
+# Ensure the target variable in the validation set is a factor
+xyzdata_val$adopter <- as.factor(xyzdata_val$adopter)
+
+# Make predictions using the trained Random Forest model
+rf_predictions <- predict(rf_cv_model, xyzdata_val)
+
+# Ensure predictions are factors with the same levels as the actual target variable
+rf_predictions <- factor(rf_predictions, levels = levels(xyzdata_val$adopter))
+
+# Check if levels are consistent
+print(levels(rf_predictions))
+print(levels(xyzdata_val$adopter))
+
+conf_matrix <- confusionMatrix(rf_predictions, xyzdata_val$adopter, positive = '1')
+print(conf_matrix)
+
+```
+
+Calculate Metrics
+```{r}
+# Extract values from confusion matrix
+TP <- 168
+FP <- 1783
+FN <- 52
+
+# Calculate precision and recall
+precision <- TP / (TP + FP)
+recall <- TP / (TP + FN)
+
+# Calculate F1 Score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print results
+cat("Precision:", precision, "\n")
+cat("Recall:", recall, "\n")
+cat("F1 Score:", f1_score, "\n")
+```
+
+Evaluate the Model on the Testing Data - ROC and AUC
+```{r}
+# Load necessary libraries
+library(pROC)
+
+# Ensure the target variable in the test set is a factor
+xyzdata_test$adopter <- as.factor(xyzdata_test$adopter)
+
+# Get predicted probabilities for the positive class
+rf_probabilities <- predict(rf_tuned, xyzdata_test, type = "prob")[, 2]  # Probability for class '1'
+
+# Calculate the ROC curve
+roc_curve <- roc(xyzdata_test$adopter, rf_probabilities)
+
+# Plot the ROC curve
+plot(roc_curve, col = "blue", main = "ROC Curve", lwd = 2)
+
+# Calculate and print AUC
+auc_value <- auc(roc_curve)
+cat("AUC:", auc_value, "\n")
+```
+Evaluate the Model on the Testing Data - Cumulative Response Curve
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+
+# Assuming you already have predicted probabilities from your model
+rf_probabilities <- predict(rf_tuned, xyzdata_test, type = "prob")[, 2]  # Probability for class '1'
+
+# Create a data frame with actual values and predicted probabilities
+results <- data.frame(actual = xyzdata_test$adopter, predicted_prob = rf_probabilities)
+
+# Sort by predicted probabilities
+results <- results %>%
+  arrange(desc(predicted_prob))
+
+# Calculate cumulative true positives and total positives
+results$cumulative_true_positives <- cumsum(results$actual == '1')
+total_positives <- sum(results$actual == '1')
+
+# Calculate the proportion of predicted positives and cumulative response rate
+results <- results %>%
+  mutate(cumulative_response_rate = cumulative_true_positives / total_positives,
+         proportion_predicted_positives = seq(1, nrow(results)) / nrow(results))
+
+# Plot the Cumulative Response Curve
+ggplot(results, aes(x = proportion_predicted_positives, y = cumulative_response_rate)) +
+  geom_line(color = "blue") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Cumulative Response Curve",
+       x = "Proportion of Predicted Positives",
+       y = "Cumulative Response Rate") +
+  theme_minimal()
+```
+
+
+Besides random forest model, we also trained a decision tree model to compare model performance
+```{r}
+# Modeling - Decision Tree on the balanced training dataset
+# training Decision Tree
+tree = rpart(adopter ~ ., data = balanced_data,
+             method = "class", 
+             parms = list(split = "information"))
+
+# print out the tree
+library(rpart.plot)
+prp(tree, varlen = 0)
+```
+
+Evaluate the Model on the Validation Data - Confusion Matrix
+```{r}
+pred_tree = predict(tree, xyzdata_val, type="class")
+
+confusionMatrix(data = pred_tree,
+                reference = xyzdata_val$adopter,
+                mode = "prec_recall",
+                positive = "1") 
+```
+Evaluate the Model on the Validation Data - ROC and AUC
+```{r}
+# Predict probabilities for the validation set (needed for ROC/AUC)
+pred_prob_tree <- predict(tree, xyzdata_val, type = "prob")[, 2]
+
+# Check that the adopter column in the test set is a factor or numeric
+xyzdata_val$adopter <- as.factor(xyzdata_val$adopter)
+
+# Calculate ROC and AUC
+roc_curve <- roc(xyzdata_val$adopter, pred_prob_tree)
+
+# Plot ROC curve
+plot(roc_curve, col = "blue", main = "ROC Curve for Decision Tree")
+
+# Calculate AUC value
+auc_value <- auc(roc_curve)
+print(paste("AUC Value: ", auc_value))
+```
+
+
+Evaluate the Model on the Testing Data - ROC and AUC.  
+The AUC of decision tree model(0.748), is lower than the AUC of random forest model(0.77)
+```{r}
+# Predict probabilities for the test set (needed for ROC/AUC)
+pred_prob_tree <- predict(tree, xyzdata_test, type = "prob")[, 2]
+
+# Check that the adopter column in the test set is a factor or numeric
+xyzdata_test$adopter <- as.factor(xyzdata_test$adopter)
+
+# Calculate ROC and AUC
+roc_curve <- roc(xyzdata_test$adopter, pred_prob_tree)
+
+# Plot ROC curve
+plot(roc_curve, col = "blue", main = "ROC Curve for Decision Tree")
+
+# Calculate AUC value
+auc_value <- auc(roc_curve)
+print(paste("AUC Value: ", auc_value))
+```
+
+Evaluate the Model on the Testing Data - Confusion Matrix. 
+```{r}
+# Convert predicted probabilities to class predictions using a threshold of 0.3
+pred_tree_class <- ifelse(pred_prob_tree > 0.6, "1", "0")
+
+# Convert to factors to match the test set 'adopter' column
+pred_tree_class <- as.factor(pred_tree_class)
+
+# Print confusion matrix
+confusionMatrix(data = pred_tree_class, 
+                reference = xyzdata_test$adopter,
+                mode = "prec_recall",
+                positive = '1')
+```
+
+Evaluate the Model on the Testing Data - Cumulative Response Curve
+```{r}
+# Create a new dataframe for cumulative response calculations
+xyz_test_cr <- xyzdata_test %>%
+  mutate(prob = pred_prob_tree) %>%  # Use the predicted probabilities from your decision tree
+  arrange(desc(prob)) %>%  # Arrange by predicted probabilities in descending order
+  mutate(adopter_1= ifelse(adopter == "1", 1, 0)) %>%  # Create a column for actual positive responses
+  # Calculate cumulative response curve values
+  mutate(y = cumsum(adopter_1) / sum(adopter_1),  # Cumulative response rate
+         x = row_number() / n())  # Percentage of population targeted
+
+# Plot the cumulative response curve
+ggplot(data = xyz_test_cr, aes(x = x, y = y)) + 
+  geom_line(color = "blue", size = 1.2) +  # Cumulative response curve
+  labs(title = "Cumulative Response Curve for Decision Tree",
+       x = "Percentage of Population Targeted",
+       y = "Cumulative Response Rate") +
+  theme_bw() +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red")  # Add baseline for random model
+```
+
+Feature Importance
+```{r}
+# We want to check what features is the model using to make predictions
+
+# Extract the names of the features used in the splits (non-leaf nodes)
+used_features <- unique(tree$frame$var[tree$frame$var != "<leaf>"])
+
+# Subset the variable importance to only include used features
+importance_used <- tree$variable.importance[used_features]
+
+# Convert to a data frame for easier plotting
+importance_df_used <- as.data.frame(importance_used)
+colnames(importance_df_used) <- c("Importance")
+
+# Add feature names as a separate column
+importance_df_used$features <- rownames(importance_df_used)
+
+ggplot(importance_df_used, aes(x = reorder(features, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Feature Importance for Used Features", x = "Features", y = "Importance Score")
+```
